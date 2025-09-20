@@ -537,79 +537,89 @@ def build_ui():
     model_choices = list_model_choices()
     template_names = get_template_choices_and_bgm_visible()
 
-    with gr.Blocks(title="DiffSinger WebUI", theme=gr.themes.Soft()) as demo:
+    css = """
+    #main-row {height: 100vh;}
+    #left-panel {position: sticky; top: 0; height: 100vh; overflow-y: auto; padding-right: 12px; border-right: 1px solid #eee;}
+    #right-panel {height: 100vh; overflow-y: auto; padding-left: 12px;}
+    """
+
+    with gr.Blocks(title="DiffSinger WebUI", theme=gr.themes.Soft(), css=css) as demo:
         gr.Markdown("## DiffSinger WebUI")
-        with gr.Row():
-            model_sel = gr.Dropdown(choices=model_choices, label="模型选择", value=(model_choices[0] if model_choices else None))
-            template_sel = gr.Dropdown(choices=template_names, label="模板选择", value=(template_names[0] if template_names else None))
 
-        with gr.Row():
-            bgm_switch = gr.Checkbox(label="BGM开关", value=False, visible=False)
-            key_shift = gr.Slider(-12, 12, value=0, step=1, label="key_shift")
-            steps = gr.Slider(1, 100, value=20, step=1, label="acoustic_steps")
-            speaker = gr.Dropdown(label="speaker", choices=[], value=None, interactive=True)
+        with gr.Row(elem_id="main-row"):
+            # 左栏：控制/预览（固定）
+            with gr.Column(elem_id="left-panel", scale=1, min_width=360):
+                # 模型与模板选择，以及上传/下载
+                model_sel = gr.Dropdown(choices=model_choices, label="模型选择", value=(model_choices[0] if model_choices else None))
+                template_sel = gr.Dropdown(choices=template_names, label="模板选择", value=(template_names[0] if template_names else None))
+                with gr.Row():
+                    upload = gr.File(label="上传 ds 模板（同名覆盖公开模板）", file_types=[".ds"], file_count="single")
+                    download_btn = gr.DownloadButton(label="下载当前编辑状态(.ds)")
 
-        # 载入模板后动态生成每句文本框（改为预创建+批量update）
-        lines_state = gr.State([])
-        offsets_state = gr.State([])
-        textboxes = []
+                with gr.Row():
+                    bgm_switch = gr.Checkbox(label="BGM开关", value=False, visible=False)
+                    key_shift = gr.Slider(-12, 12, value=0, step=1, label="key_shift")
+                    steps = gr.Slider(1, 100, value=20, step=1, label="acoustic_steps")
+                speaker = gr.Dropdown(label="speaker", choices=[], value=None, interactive=True)
 
-        # 占位容器
-        per_line_audio = gr.Audio(label="单句预览", autoplay=True, interactive=False)
-        per_line_error = gr.Markdown("", visible=False)
+                # 单句预览与错误提示
+                per_line_audio = gr.Audio(label="单句预览", autoplay=True, interactive=False)
+                per_line_error = gr.Markdown("", visible=False)
 
-        def rebuild_textboxes(lines):
-            comps = []
-            for idx, txt in enumerate(lines):
-                comps.append(gr.Textbox(value=txt, label=f"第 {idx+1} 句", lines=1, max_lines=1))
-            return comps
+                # 生成控制与输出
+                gen_btn = gr.Button("生成整首")
+                progress_md = gr.Markdown("", visible=True)
+                full_vocal = gr.Audio(label="整首（人声）", autoplay=False)
+                full_mixed = gr.Audio(label="整首（混音）", autoplay=False, visible=False)
 
-        # 动态区域
-        dyn = gr.Column()
-        # 预创建文本框，依据当前模板设置初始可见性和值
-        init_lines = []
-        init_offsets = []
-        if template_sel.value:
-            try:
-                _, init_lines, init_offsets = on_select_template(template_sel.value)
-            except Exception:
-                init_lines, init_offsets = [], []
-        with dyn:
-            for i in range(MAX_LINES):
-                visible = i < len(init_lines)
-                val = init_lines[i] if visible else ""
-                tb = gr.Textbox(value=val, label=f"第 {i+1} 句", lines=1, max_lines=1, visible=visible)
-                textboxes.append(tb)
-        if template_sel.value:
-            lines_state.value = init_lines
-            offsets_state.value = init_offsets
-        gen_btn = gr.Button("生成整首")
-        with gr.Row():
-            full_vocal = gr.Audio(label="整首（人声）", autoplay=False)
-            full_mixed = gr.Audio(label="整首（混音）", autoplay=False)
+            # 右栏：模板与歌词编辑
+            with gr.Column(elem_id="right-panel", scale=2):
+                # 状态与歌词编辑容器（右栏仅歌词编辑）
+                lines_state = gr.State([])
+                offsets_state = gr.State([])
+                # 生成控制状态
+                stop_flag = gr.State(False)
+                generating_flag = gr.State(False)
+                dyn = gr.Column()
 
-        with gr.Row():
-            upload = gr.File(label="上传 ds 模板（同名覆盖公开模板）", file_types=[".ds"], file_count="single")
-        with gr.Row():
-            download_btn = gr.DownloadButton(label="下载当前编辑状态(.ds)")
+                # 预创建文本框，依据当前模板设置初始可见性和值
+                textboxes = []
+                init_lines = []
+                init_offsets = []
+                if template_sel.value:
+                    try:
+                        _, init_lines, init_offsets = on_select_template(template_sel.value)
+                    except Exception:
+                        init_lines, init_offsets = [], []
+                with dyn:
+                    for i in range(MAX_LINES):
+                        visible = i < len(init_lines)
+                        val = init_lines[i] if visible else ""
+                        tb = gr.Textbox(value=val, label=f"第 {i+1} 句", lines=1, max_lines=1, visible=visible)
+                        textboxes.append(tb)
+                if template_sel.value:
+                    lines_state.value = init_lines
+                    offsets_state.value = init_offsets
 
-        # 事件：选择模板时，更新 BGM 开关显示与文本框内容
+        # 事件：选择模板时，更新 BGM 开关、整首混音可见性与文本框内容
         def on_template_change(template_name):
             bgm_update, lines, offsets = on_select_template(template_name)
+            has_bgm = bool(bgm_update.get("visible", False)) if isinstance(bgm_update, dict) else False
             tb_updates = []
             n = len(lines)
             for i, tb in enumerate(textboxes):
                 if i < n:
-                    tb_updates.append(gr.update(value=lines[i], visible=True, label=f"第 {i+1} 句"))
+                    tb_updates.append(gr.update(value=lines[i], visible=True))
                 else:
-                    tb_updates.append(gr.update(value="", visible=False, label=f"第 {i+1} 句"))
-            # 返回：BGM、模板下拉、状态、错误清空、以及所有文本框更新
+                    tb_updates.append(gr.update(value="", visible=False))
+            # 返回：BGM、模板下拉、状态、错误清空、整首混音可见性（按是否存在BGM），以及所有文本框更新
             return (
                 bgm_update,
                 gr.update(choices=get_template_choices_and_bgm_visible(), value=template_name),
                 lines,
                 offsets,
                 gr.update(value="", visible=False),
+                gr.update(visible=has_bgm),
                 *tb_updates,
             )
 
@@ -638,11 +648,25 @@ def build_ui():
             outputs=[speaker],
         )
 
-        # 模板切换：批量更新预创建文本框
+        # BGM 开关变化：控制“整首（混音）”可见性（需当前模板存在 BGM）
+        def on_bgm_toggle(use_bgm, template_name):
+            mapping = find_templates()
+            has_bgm = False
+            if template_name in mapping:
+                has_bgm = bgm_path_for(mapping[template_name]) is not None
+            return gr.update(visible=bool(use_bgm and has_bgm))
+
+        bgm_switch.change(
+            fn=on_bgm_toggle,
+            inputs=[bgm_switch, template_sel],
+            outputs=[full_mixed],
+        )
+
+        # 模板切换：批量更新预创建文本框 + 初始化整首混音可见性
         template_sel.change(
             fn=on_template_change,
             inputs=[template_sel],
-            outputs=[bgm_switch, template_sel, lines_state, offsets_state, per_line_error, *textboxes],
+            outputs=[bgm_switch, template_sel, lines_state, offsets_state, per_line_error, full_mixed, *textboxes],
         )
 
         # 初始构建已通过预创建完成
@@ -667,19 +691,87 @@ def build_ui():
                 outputs=[per_line_audio, per_line_error, lines_state],
             )
 
-        # 生成整首
-        def on_gen(model_sel_v, template_sel_v, speaker_v, key_shift_v, steps_v, use_bgm_v, lines):
-            vocal, mixed = generate_full_song(model_sel_v, template_sel_v, lines, speaker_v, key_shift_v, steps_v, use_bgm_v)
-            if isinstance(mixed, str) and mixed.startswith("ERROR::"):
-                return gr.update(value=None), gr.update(value=None)
-            if mixed is None:
-                return gr.update(value=vocal), gr.update(value=None)
-            return gr.update(value=vocal), gr.update(value=mixed)
+        # 生成整首（支持进度与中断）
+        def on_gen_or_stop(model_sel_v, template_sel_v, speaker_v, key_shift_v, steps_v, use_bgm_v, lines, stop, generating, progress=gr.Progress(track_tqdm=True)):
+            # 若正在生成，本次点击作为“停止”信号，仅更新按钮与提示
+            if generating:
+                stop = True
+                return gr.update(), gr.update(), gr.update(value="生成整首"), gr.update(value="已请求停止，稍候..."), stop, generating
+
+            # 启动生成：切换按钮，清空输出，重置停止标志
+            stop = False
+            generating = True
+            yield gr.update(value=None), gr.update(value=None), gr.update(value="停止生成整首"), gr.update(value="开始生成..."), stop, generating
+
+            try:
+                mapping = find_templates()
+                if not model_sel_v:
+                    raise gr.Error("请先选择模型")
+                if template_sel_v not in mapping:
+                    raise gr.Error("未找到模板")
+                template_path = mapping[template_sel_v]
+                ds = load_ds(template_path)
+                if len(ds) != len(lines or []):
+                    raise gr.Error("模板行数与编辑行数不一致")
+
+                model_path = ROOT / model_sel_v
+                segs_with_offsets = []
+                total = len(ds)
+                for idx, item in enumerate(ds):
+                    if stop:
+                        yield gr.update(), gr.update(), gr.update(value="生成整首"), gr.update(value=f"已中断，完成 {idx}/{total} 行。"), stop, False
+                        return
+                    text = (lines[idx] or "").strip()
+                    if not text:
+                        # 更新进度显示但不合成
+                        progress((idx + 1) / total, desc=f"跳过空白句 {idx+1}/{total}")
+                        yield gr.update(), gr.update(), gr.update(value="停止生成整首"), gr.update(value=f"跳过空白句 {idx+1}/{total}"), stop, True
+                        continue
+
+                    progress((idx + 1) / total, desc=f"渲染第 {idx+1}/{total} 句")
+                    yield gr.update(), gr.update(), gr.update(value="停止生成整首"), gr.update(value=f"渲染第 {idx+1}/{total} 句..."), stop, True
+
+                    h = param_hash(model_sel_v, speaker_v, key_shift_v, steps_v, text)
+                    cache_dir = OUTPUT_DIR / template_sel_v / h
+                    cache_dir.mkdir(parents=True, exist_ok=True)
+                    wav_out = cache_dir / f"line_{idx+1}.wav"
+                    if not wav_out.exists():
+                        engine.synth_line(
+                            model_path=model_path,
+                            template_path=template_path,
+                            line_index=idx,
+                            text=text,
+                            speaker=speaker_v or None,
+                            key_shift=int(key_shift_v),
+                            steps=int(steps_v),
+                            out_wav=wav_out,
+                        )
+                    segs_with_offsets.append((audiosegment_from_file(wav_out), float(item.get("offset", 0.0))))
+
+                # 拼接输出
+                vocal_full = concat_with_offsets(segs_with_offsets)
+                final_dir = OUTPUT_DIR / template_sel_v / "final"
+                final_dir.mkdir(parents=True, exist_ok=True)
+                ts_tag = time.strftime("%Y%m%d_%H%M%S")
+                vocal_path = final_dir / f"{template_sel_v}_vocal_{ts_tag}.wav"
+                export_wav(vocal_full, vocal_path)
+
+                mixed_path = None
+                bgm_p = bgm_path_for(template_path)
+                if use_bgm_v and bgm_p and bgm_p.exists():
+                    mixed = mix_full_song(vocal_full, audiosegment_from_file(bgm_p))
+                    mixed_path = final_dir / f"{template_sel_v}_mixed_{ts_tag}.wav"
+                    export_wav(mixed, mixed_path)
+
+                # 完成
+                yield gr.update(value=str(vocal_path)), gr.update(value=(str(mixed_path) if mixed_path else None)), gr.update(value="生成整首"), gr.update(value="已完成"), False, False
+            except Exception as e:
+                yield gr.update(value=None), gr.update(value=None), gr.update(value="生成整首"), gr.update(value=f"❌ 失败：{type(e).__name__}: {e}"), False, False
 
         gen_btn.click(
-            fn=on_gen,
-            inputs=[model_sel, template_sel, speaker, key_shift, steps, bgm_switch, lines_state],
-            outputs=[full_vocal, full_mixed],
+            fn=on_gen_or_stop,
+            inputs=[model_sel, template_sel, speaker, key_shift, steps, bgm_switch, lines_state, stop_flag, generating_flag],
+            outputs=[full_vocal, full_mixed, gen_btn, progress_md, stop_flag, generating_flag],
         )
 
         # 下载当前编辑后的 ds
@@ -722,6 +814,18 @@ def build_ui():
             fn=on_upload,
             inputs=[upload, template_sel],
             outputs=[template_sel, per_line_error],
+        )
+
+        # 进入页面时，自动刷新 speaker 与模板/BGM/歌词区
+        def on_app_load(model_path_rel, template_name):
+            spk_upd = on_model_change(model_path_rel)
+            tpl_upds = on_template_change(template_name)
+            return (spk_upd, *tpl_upds)
+
+        demo.load(
+            fn=on_app_load,
+            inputs=[model_sel, template_sel],
+            outputs=[speaker, bgm_switch, template_sel, lines_state, offsets_state, per_line_error, full_mixed, *textboxes],
         )
 
     return demo
