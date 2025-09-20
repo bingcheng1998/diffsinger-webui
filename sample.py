@@ -27,7 +27,7 @@ else:
     print("未找到可用说话人")
 
 # 读取 DS 文件，取第一句测试
-ds = DSReader("sample.ds").read_ds()[0]
+ds = DSReader("templates/public/00_我多想说再见啊.ds").read_ds()[0]
 
 # 修改歌词
 
