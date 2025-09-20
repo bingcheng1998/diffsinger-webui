@@ -538,23 +538,30 @@ def build_ui():
     template_names = get_template_choices_and_bgm_visible()
 
     css = """
-    #main-row {height: 100vh;}
-    #left-panel {position: sticky; top: 0; height: 100vh; overflow-y: auto; padding-right: 12px; border-right: 1px solid #eee;}
-    #right-panel {height: 100vh; overflow-y: auto; padding-left: 12px;}
+    html, body, #root, .gradio-container { height: 100%; overflow: hidden; }
+    #main-row { height: 100vh; overflow: hidden; }
+    #left-panel, #right-panel {
+        height: 100vh;
+        overflow-y: auto;
+        padding: 12px;
+    }
+    #left-panel { border-right: 1px solid #eee; }
+    /* 紧凑按钮样式 */
+    .compact-btn button { padding: 4px 10px !important; min-height: 30px !important; height: 30px !important; }
+    .compact-row { gap: 8px !important; }
     """
 
     with gr.Blocks(title="DiffSinger WebUI", theme=gr.themes.Soft(), css=css) as demo:
-        gr.Markdown("## DiffSinger WebUI")
-
         with gr.Row(elem_id="main-row"):
             # 左栏：控制/预览（固定）
             with gr.Column(elem_id="left-panel", scale=1, min_width=360):
-                # 模型与模板选择，以及上传/下载
+                # 左栏标题与模型/模板选择、上传/下载
+                gr.Markdown("## DiffSinger WebUI")
                 model_sel = gr.Dropdown(choices=model_choices, label="模型选择", value=(model_choices[0] if model_choices else None))
                 template_sel = gr.Dropdown(choices=template_names, label="模板选择", value=(template_names[0] if template_names else None))
-                with gr.Row():
-                    upload = gr.File(label="上传 ds 模板（同名覆盖公开模板）", file_types=[".ds"], file_count="single")
-                    download_btn = gr.DownloadButton(label="下载当前编辑状态(.ds)")
+                with gr.Row(elem_classes=["compact-row"]):
+                    upload = gr.UploadButton("上传ds模板", file_types=[".ds"], elem_classes=["compact-btn"])
+                    download_btn = gr.DownloadButton(label="下载当前编辑状态(.ds)", elem_classes=["compact-btn"])
 
                 with gr.Row():
                     bgm_switch = gr.Checkbox(label="BGM开关", value=False, visible=False)
@@ -667,6 +674,39 @@ def build_ui():
             fn=on_template_change,
             inputs=[template_sel],
             outputs=[bgm_switch, template_sel, lines_state, offsets_state, per_line_error, full_mixed, *textboxes],
+        )
+
+        # 上传模板：将用户 .ds 保存到 templates/user，并刷新模板下拉
+        def on_upload_ds(file_obj):
+            try:
+                if not file_obj:
+                    raise gr.Error("未选择文件")
+                # gr.UploadButton 返回字典/路径，兼容不同返回
+                import shutil
+                from pathlib import Path as _P
+                src = _P(file_obj.name) if hasattr(file_obj, "name") else _P(str(file_obj))
+                if src.suffix.lower() != ".ds":
+                    raise gr.Error("仅支持 .ds 文件")
+                dst_dir = USER_TEMPLATES_DIR
+                dst_dir.mkdir(parents=True, exist_ok=True)
+                dst = dst_dir / src.name
+                shutil.copyfile(src, dst)
+                # 刷新模板列表，并选中新上传的模板名（无扩展）
+                new_choices = get_template_choices_and_bgm_visible()
+                base = src.stem
+                # 若同名覆盖，模板名以去扩展后的相对名为准
+                # 确认在 choices 中（user 覆盖 public）
+                if base not in new_choices and (dst_dir / src.name).exists():
+                    # 有些实现是用完整相对路径名，这里退化为重新计算 choices
+                    pass
+                return gr.update(choices=new_choices, value=base)
+            except Exception as e:
+                raise gr.Error(f"上传失败: {e}")
+
+        upload.upload(
+            fn=on_upload_ds,
+            inputs=[upload],
+            outputs=[template_sel],
         )
 
         # 初始构建已通过预创建完成
@@ -810,7 +850,7 @@ def build_ui():
             # 成功：将模板选择切换为新模板，触发 on_template_change 自动重建文本框
             return gr.update(choices=get_template_choices_and_bgm_visible(), value=name), gr.update(value="", visible=False)
 
-        upload.change(
+        upload.upload(
             fn=on_upload,
             inputs=[upload, template_sel],
             outputs=[template_sel, per_line_error],
