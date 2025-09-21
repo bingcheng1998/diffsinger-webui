@@ -12,6 +12,8 @@
 - 单句编辑后回车可以立即渲染并播放
 - 点击合成整曲按钮可以合成整首歌曲
 
+我们提供 [hugguingface space](https://huggingface.co/spaces/SJTU/diffsinger-webui) 试用。由于HF资源限制，推理很慢，建议在本地运行。
+
 ![界面截图](./.src/webui.jpg)
 
 ## 环境要求
