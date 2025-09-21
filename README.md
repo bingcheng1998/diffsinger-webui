@@ -37,8 +37,6 @@ pip install -r requirements.txt
 
 社区提供了[DiffSinger自制声库分享](https://docs.qq.com/sheet/DQXNDY0pPaEpOc3JN)，如果你不确定下载哪个，推荐从[zhibin club](https://www.zhibin.club/)下载[姜柯JiangKe](https://pan.quark.cn/s/254f030af8cb#/list/share/0929019064004907b7b95212c03066ed)声库开始尝试。
 
-下载声库后，需要解压，解压缩后的路径可以作为程序参数进行推理。
-
 ## 目录结构
 - `models/`：放置 DiffSinger 模型（详见 `models/README.md`）
 - `templates/public/`：公开 ds 模板（可共建）
