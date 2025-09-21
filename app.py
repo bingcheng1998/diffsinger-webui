@@ -16,11 +16,13 @@ try:
     from voice_bank.commons.ds_reader import DSReader
     from voice_bank.commons.phome_num_counter import Phome
     from pypinyin import pinyin, Style
+    from pypinyin.constants import RE_HANS
 except Exception:
     PredAll = None
     DSReader = None
     Phome = None
     Style = None
+    RE_HANS = None
 
 def get_opencpop_dict(path: str = str(Path("dictionaries") / "opencpop-extension.txt")) -> Dict[str, str]:
     result = {"AP": "AP", "SP": "SP"}
@@ -46,6 +48,29 @@ def get_phonemes(text: str, opencpop_dict: Dict[str, str]) -> List[str]:
             continue
         result.append(opencpop_dict.get(py, py))
     return " ".join(result).split()
+
+# —— 文本预处理：相邻纯汉字不加空格，其余保留空格 ——
+def _is_hans_token(s: str) -> bool:
+    try:
+        return bool(RE_HANS and RE_HANS.fullmatch(s))
+    except Exception:
+        return False
+
+def preprocess_zh_spaces(text: str) -> str:
+    parts = [p for p in (text or "").split(" ") if p != ""]
+    if not parts:
+        return ""
+    out = []
+    for i, part in enumerate(parts):
+        if i == 0:
+            out.append(part)
+        else:
+            prev = parts[i - 1]
+            if _is_hans_token(prev) and _is_hans_token(part):
+                out[-1] = out[-1] + part
+            else:
+                out.append(" " + part)
+    return "".join(out)
 
 # 试图导入 diffsinger-utau（按要求使用该库，而非自行实现）
 try:
@@ -370,7 +395,7 @@ def on_select_template(template_name: str):
     p = mapping[template_name]
     bgm = bgm_path_for(p)
     ds = load_ds(p)
-    lines = [item.get("text", "") for item in ds]
+    lines = [preprocess_zh_spaces(item.get("text", "")) for item in ds]
     offsets = [float(item.get("offset", 0.0)) for item in ds]
     bgm_update = gr.update(visible=(bgm is not None), value=(bgm is not None))
     return bgm_update, lines, offsets
@@ -561,13 +586,13 @@ def build_ui():
                 template_sel = gr.Dropdown(choices=template_names, label="模板选择", value=(template_names[0] if template_names else None))
                 with gr.Row(elem_classes=["compact-row"]):
                     upload = gr.UploadButton("上传ds模板", file_types=[".ds"], elem_classes=["compact-btn"])
-                    download_btn = gr.DownloadButton(label="下载当前编辑状态(.ds)", elem_classes=["compact-btn"])
+                    download_btn = gr.DownloadButton(label="下载当前ds状态", elem_classes=["compact-btn"])
 
                 with gr.Row():
                     bgm_switch = gr.Checkbox(label="BGM开关", value=False, visible=False)
-                    key_shift = gr.Slider(-12, 12, value=0, step=1, label="key_shift")
-                    steps = gr.Slider(1, 100, value=20, step=1, label="acoustic_steps")
-                speaker = gr.Dropdown(label="speaker", choices=[], value=None, interactive=True)
+                    key_shift = gr.Slider(-12, 12, value=0, step=1, label="音高偏移")
+                    steps = gr.Slider(1, 50, value=4, step=1, label="渲染步数")
+                speaker = gr.Dropdown(label="演唱者", choices=[], value=None, interactive=True)
 
                 # 单句预览与错误提示
                 per_line_audio = gr.Audio(label="单句预览", autoplay=True, interactive=False)
