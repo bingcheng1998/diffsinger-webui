@@ -24,6 +24,9 @@
 
 ## 安装
 ```bash
+git clone https://github.com/bingcheng1998/diffsinger-webui.git
+cd diffsinger-webui
+
 conda create -n diffsinger python=3.8
 conda activate diffsinger
 pip install -r requirements.txt
