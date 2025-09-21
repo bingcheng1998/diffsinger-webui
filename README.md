@@ -4,6 +4,16 @@
 依赖 gradio 与 [diffsinger-utau](https://github.com/bingcheng1998/diffsinger_utau)。
 基于 [diffsinger](https://github.com/openvpi/DiffSinger) 项目，兼容 OpenUtau 声库。
 
+## 界面与操作
+
+- 选择声库
+- 选择模板
+- 输入歌词
+- 单句编辑后回车可以立即渲染并播放
+- 点击合成整曲按钮可以合成整首歌曲
+
+![界面截图](./.src/webui.jpg)
+
 ## 环境要求
 
 > 由于[历史原因](https://github.com/openvpi/DiffSinger/blob/main/docs/GettingStarted.md#deployment)，强依赖 PyTorch 1.13，因此建议使用 Python 3.8。
