@@ -1,9 +1,11 @@
 from calendar import c
 from pathlib import Path
+from random import sample
 from numpy.random import f
-from voice_bank import PredAll
-from voice_bank.commons.ds_reader import DSReader
-from voice_bank.commons.phome_num_counter import Phome
+from diffsinger_utau.voice_bank import PredAll
+from diffsinger_utau.voice_bank.commons.ds_reader import DSReader
+from diffsinger_utau.voice_bank.commons.phome_num_counter import Phome
+from diffsinger_utau.samples import get_sample_path, list_samples
 from pypinyin import pinyin, Style
 import json
 from typing import Optional
@@ -27,48 +29,19 @@ else:
     print("未找到可用说话人")
 
 # 读取 DS 文件，取第一句测试
-ds = DSReader("templates/public/00_我多想说再见啊.ds").read_ds()[0]
+sample = sorted(list_samples())
+print(f'样本: {sample}')
+ds_path = get_sample_path(sample[0])
+ds = DSReader(ds_path).read_ds()[0]
 
 # 修改歌词
 
 print(f'模板歌词: {ds["text"]}')
-new_text = "AP海上明月共潮生SP"
+new_text = "AP 我想 SP 所有的一切 SP 都如意 SP"
 ds["text"] = new_text
 print(f'修改后歌词: {ds["text"]}')
 
-def get_opencpop_dict(path = 'dictionaries/opencpop-extension.txt'):
-    with open(path, 'r') as f:
-        result = {
-            'AP': 'AP',
-            'SP': 'SP'
-        }
-        for line in f:
-            if '\t' in line:
-                result[line.split("\t")[0].strip()] = line.split("\t")[1].strip()
-        return result
-
-opencpop_dict = get_opencpop_dict()
-
-def get_phonemes(text, opencpop_dict):
-    pinyins = [x[0] for x in pinyin(text, style=Style.NORMAL)]
-    result = []
-    for py in pinyins:
-        py = py.strip()
-        if not py:
-            continue
-        if py in opencpop_dict:
-            result.append(opencpop_dict[py])
-        else:
-            result.append(py)
-    result = str(' '.join(result)).split()
-    return result
-
-phonemes = get_phonemes(new_text, opencpop_dict)
-ds["ph_seq"] = ' '.join(phonemes)
-ds["ph_num"] = ' '.join(map(str, Phome(phonemes).get_ph_num()))
-print(f'修改后音素序列: {ds["ph_seq"]}')
-print(f'修改后音素数量: {ds["ph_num"]}')
-print(f'修改后音素数量: {len(phonemes)}')
+ds.replace(new_text)
 
 # 执行完整推理
 results = predictor.predict_full_pipeline(

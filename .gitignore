@@ -3,3 +3,5 @@ cache/
 models/
 templates/user/
 __pycache__/
+*.bac
+templates/public/*.flac

@@ -5,6 +5,7 @@ import os
 import sys
 import hashlib
 import time
+import math
 from typing import List, Dict, Optional, Tuple
 from pathlib import Path
 
@@ -12,9 +13,9 @@ import numpy as np
 from pydub import AudioSegment
 # 引入与 sample.py 一致的组件
 try:
-    from voice_bank import PredAll
-    from voice_bank.commons.ds_reader import DSReader
-    from voice_bank.commons.phome_num_counter import Phome
+    from diffsinger_utau.voice_bank import PredAll
+    from diffsinger_utau.voice_bank.commons.ds_reader import DSReader
+    from diffsinger_utau.voice_bank.commons.phome_num_counter import Phome
     from pypinyin import pinyin, Style
     from pypinyin.constants import RE_HANS
 except Exception:
@@ -166,17 +167,23 @@ def export_wav(seg: AudioSegment, path: Path):
     seg.export(str(path), format="wav")
 
 
-def overlay_bgm_snippet(vocal_wav: Path, bgm_audio: AudioSegment, offset_sec: float, gain_db: float = 0.0) -> AudioSegment:
+def overlay_bgm_snippet(vocal_wav: Path, bgm_audio: AudioSegment, offset_sec: float, bgm_volume: float = 1.0, vocal_gain_db: float = 0.0) -> AudioSegment:
     vocal = audiosegment_from_file(vocal_wav)
-    if gain_db != 0.0:
-        vocal = vocal + gain_db
+    if vocal_gain_db != 0.0:
+        vocal = vocal + vocal_gain_db
     start_ms = max(int(offset_sec * 1000), 0)
-    # 确保 BGM 足够长，不够则静音补齐
-    if len(bgm_audio) < start_ms + len(vocal):
-        pad_ms = start_ms + len(vocal) - len(bgm_audio)
-        bgm_audio = bgm_audio + AudioSegment.silent(duration=pad_ms)
-    mixed = bgm_audio.overlay(vocal, position=start_ms)
-    # 裁剪到混音范围以便预览：从 start_ms 到 start_ms+len(vocal)
+    # 应用 BGM 音量倍率
+    if bgm_volume <= 0.0:
+        base = AudioSegment.silent(duration=start_ms + len(vocal))
+    else:
+        gain_db = 20.0 * math.log10(bgm_volume)
+        bgm_audio = bgm_audio + gain_db
+        base = bgm_audio
+    # 确保底轨足够长
+    if len(base) < start_ms + len(vocal):
+        pad_ms = start_ms + len(vocal) - len(base)
+        base = base + AudioSegment.silent(duration=pad_ms)
+    mixed = base.overlay(vocal, position=start_ms)
     return mixed[start_ms : start_ms + len(vocal)]
 
 
@@ -195,13 +202,19 @@ def concat_with_offsets(clips: List[Tuple[AudioSegment, float]]) -> AudioSegment
     return timeline
 
 
-def mix_full_song(vocal: AudioSegment, bgm: AudioSegment) -> AudioSegment:
+def mix_full_song(vocal: AudioSegment, bgm: AudioSegment, bgm_volume: float = 1.0) -> AudioSegment:
     # 保证两者同长度
     if len(bgm) < len(vocal):
         bgm = bgm + AudioSegment.silent(duration=(len(vocal) - len(bgm)))
     else:
         vocal = vocal + AudioSegment.silent(duration=(len(bgm) - len(vocal)))
-    return bgm.overlay(vocal)
+    # 应用 BGM 音量倍率
+    if bgm_volume <= 0.0:
+        bgm_adj = AudioSegment.silent(duration=len(bgm))
+    else:
+        gain_db = 20.0 * math.log10(bgm_volume)
+        bgm_adj = bgm + gain_db
+    return bgm_adj.overlay(vocal)
 
 
 def param_hash(model_sel: str, speaker: str, key_shift: int, steps: int, text: str) -> str:
@@ -391,13 +404,13 @@ def get_template_choices_and_bgm_visible():
 def on_select_template(template_name: str):
     mapping = find_templates()
     if not template_name or template_name not in mapping:
-        return gr.update(visible=False, value=False), [], []
+        return gr.update(visible=False, value=0.0), [], []
     p = mapping[template_name]
     bgm = bgm_path_for(p)
     ds = load_ds(p)
     lines = [preprocess_zh_spaces(item.get("text", "")) for item in ds]
     offsets = [float(item.get("offset", 0.0)) for item in ds]
-    bgm_update = gr.update(visible=(bgm is not None), value=(bgm is not None))
+    bgm_update = gr.update(visible=(bgm is not None), value=(1.0 if bgm is not None else 0.0))
     return bgm_update, lines, offsets
 
 
@@ -409,7 +422,7 @@ def render_single_line(
     speaker: str,
     key_shift: int,
     steps: int,
-    use_bgm: bool,
+    bgm_volume: float,
 ) -> Tuple[Optional[str], Optional[str]]:
     """
     渲染单句，返回：(音频路径, 错误消息)
@@ -451,10 +464,10 @@ def render_single_line(
 
         # 是否混音预览
         mapping_bgm = bgm_path_for(template_path)
-        if use_bgm and mapping_bgm and mapping_bgm.exists():
+        if (bgm_volume and bgm_volume > 0.0) and mapping_bgm and mapping_bgm.exists():
             bgm_audio = audiosegment_from_file(mapping_bgm)
             offset = float(ds[line_index].get("offset", 0.0))
-            mixed_seg = overlay_bgm_snippet(wav_out, bgm_audio, offset)
+            mixed_seg = overlay_bgm_snippet(wav_out, bgm_audio, offset, bgm_volume)
             preview_wav = cache_dir / f"line_{line_index+1}_preview.wav"
             export_wav(mixed_seg, preview_wav)
             return str(preview_wav), None
@@ -472,7 +485,7 @@ def generate_full_song(
     speaker: str,
     key_shift: int,
     steps: int,
-    use_bgm: bool,
+    bgm_volume: float,
 ) -> Tuple[Optional[str], Optional[str]]:
     """
     生成整曲，返回：(主输出音频路径, 混音输出音频路径或错误消息字符串)
@@ -523,9 +536,9 @@ def generate_full_song(
         # 混音版本（如有 BGM 且开启开关）
         mixed_path = None
         bgm_p = bgm_path_for(template_path)
-        if use_bgm and bgm_p and bgm_p.exists():
+        if (bgm_volume and bgm_volume > 0.0) and bgm_p and bgm_p.exists():
             bgm_audio = audiosegment_from_file(bgm_p)
-            mixed = mix_full_song(vocal_full, bgm_audio)
+            mixed = mix_full_song(vocal_full, bgm_audio, bgm_volume)
             mixed_path = final_dir / f"{template_name}_mixed_{ts_tag}.wav"
             export_wav(mixed, mixed_path)
 
@@ -589,7 +602,7 @@ def build_ui():
                     download_btn = gr.DownloadButton(label="下载当前ds状态", elem_classes=["compact-btn"])
 
                 with gr.Row():
-                    bgm_switch = gr.Checkbox(label="BGM开关", value=False, visible=False)
+                    bgm_volume = gr.Slider(0.0, 2.0, value=1.0, step=0.01, label="BGM音量倍率", visible=False)
                     key_shift = gr.Slider(-12, 12, value=0, step=1, label="音高偏移")
                     steps = gr.Slider(1, 50, value=4, step=1, label="渲染步数")
                 speaker = gr.Dropdown(label="演唱者", choices=[], value=None, interactive=True)
@@ -680,17 +693,17 @@ def build_ui():
             outputs=[speaker],
         )
 
-        # BGM 开关变化：控制“整首（混音）”可见性（需当前模板存在 BGM）
-        def on_bgm_toggle(use_bgm, template_name):
+        # BGM 音量倍率变化：控制“整首（混音）”可见性（需当前模板存在 BGM 且倍率>0）
+        def on_bgm_volume_change(bgm_vol, template_name):
             mapping = find_templates()
             has_bgm = False
             if template_name in mapping:
                 has_bgm = bgm_path_for(mapping[template_name]) is not None
-            return gr.update(visible=bool(use_bgm and has_bgm))
+            return gr.update(visible=bool(bgm_vol and bgm_vol > 0 and has_bgm))
 
-        bgm_switch.change(
-            fn=on_bgm_toggle,
-            inputs=[bgm_switch, template_sel],
+        bgm_volume.change(
+            fn=on_bgm_volume_change,
+            inputs=[bgm_volume, template_sel],
             outputs=[full_mixed],
         )
 
@@ -698,7 +711,7 @@ def build_ui():
         template_sel.change(
             fn=on_template_change,
             inputs=[template_sel],
-            outputs=[bgm_switch, template_sel, lines_state, offsets_state, per_line_error, full_mixed, *textboxes],
+            outputs=[bgm_volume, template_sel, lines_state, offsets_state, per_line_error, full_mixed, *textboxes],
         )
 
         # 上传模板：将用户 .ds 保存到 templates/user，并刷新模板下拉
@@ -739,11 +752,11 @@ def build_ui():
         # 文本提交事件：逐句渲染（为预创建文本框绑定）
         for idx, tb in enumerate(textboxes):
             def make_submit(i):
-                def _submit(new_text, lines_list, model_sel_v, template_sel_v, speaker_v, key_shift_v, steps_v, use_bgm_v):
+                def _submit(new_text, lines_list, model_sel_v, template_sel_v, speaker_v, key_shift_v, steps_v, bgm_volume_v):
                     # 仅处理当前可见范围内的行
                     if not isinstance(lines_list, list) or i >= max(len(lines_list), 0):
                         return gr.update(), gr.update(), lines_list
-                    audio_path, err = render_single_line(model_sel_v, template_sel_v, i, new_text, speaker_v, key_shift_v, steps_v, use_bgm_v)
+                    audio_path, err = render_single_line(model_sel_v, template_sel_v, i, new_text, speaker_v, key_shift_v, steps_v, bgm_volume_v)
                     if i < len(lines_list):
                         lines_list[i] = new_text
                     if err:
@@ -752,12 +765,12 @@ def build_ui():
                 return _submit
             tb.submit(
                 fn=make_submit(idx),
-                inputs=[tb, lines_state, model_sel, template_sel, speaker, key_shift, steps, bgm_switch],
+                inputs=[tb, lines_state, model_sel, template_sel, speaker, key_shift, steps, bgm_volume],
                 outputs=[per_line_audio, per_line_error, lines_state],
             )
 
         # 生成整首（支持进度与中断）
-        def on_gen_or_stop(model_sel_v, template_sel_v, speaker_v, key_shift_v, steps_v, use_bgm_v, lines, stop, generating, progress=gr.Progress(track_tqdm=True)):
+        def on_gen_or_stop(model_sel_v, template_sel_v, speaker_v, key_shift_v, steps_v, bgm_volume_v, lines, stop, generating, progress=gr.Progress(track_tqdm=True)):
             # 若正在生成，本次点击作为“停止”信号，仅更新按钮与提示
             if generating:
                 stop = True
@@ -823,8 +836,8 @@ def build_ui():
 
                 mixed_path = None
                 bgm_p = bgm_path_for(template_path)
-                if use_bgm_v and bgm_p and bgm_p.exists():
-                    mixed = mix_full_song(vocal_full, audiosegment_from_file(bgm_p))
+                if (bgm_volume_v and bgm_volume_v > 0.0) and bgm_p and bgm_p.exists():
+                    mixed = mix_full_song(vocal_full, audiosegment_from_file(bgm_p), bgm_volume_v)
                     mixed_path = final_dir / f"{template_sel_v}_mixed_{ts_tag}.wav"
                     export_wav(mixed, mixed_path)
 
@@ -835,7 +848,7 @@ def build_ui():
 
         gen_btn.click(
             fn=on_gen_or_stop,
-            inputs=[model_sel, template_sel, speaker, key_shift, steps, bgm_switch, lines_state, stop_flag, generating_flag],
+            inputs=[model_sel, template_sel, speaker, key_shift, steps, bgm_volume, lines_state, stop_flag, generating_flag],
             outputs=[full_vocal, full_mixed, gen_btn, progress_md, stop_flag, generating_flag],
         )
 
@@ -890,7 +903,7 @@ def build_ui():
         demo.load(
             fn=on_app_load,
             inputs=[model_sel, template_sel],
-            outputs=[speaker, bgm_switch, template_sel, lines_state, offsets_state, per_line_error, full_mixed, *textboxes],
+            outputs=[speaker, bgm_volume, template_sel, lines_state, offsets_state, per_line_error, full_mixed, *textboxes],
         )
 
     return demo
