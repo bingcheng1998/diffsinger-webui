@@ -576,25 +576,31 @@ def build_ui():
     template_names = get_template_choices_and_bgm_visible()
 
     css = """
-    html, body, #root, .gradio-container { height: 100%; overflow: hidden; }
-    #main-row { height: 100vh; overflow: hidden; }
+    /* 全局：启用页面整体滚动，移除左右分栏独立滚动 */
+    #main-row { gap: 12px; }
     #left-panel, #right-panel {
-        height: 100vh;
-        overflow-y: auto;
         padding: 12px;
     }
     #left-panel { border-right: 1px solid #eee; }
+
+    /* 响应式：窄屏下上下布局，宽屏左右布局 */
+    @media (max-width: 900px) {
+        #main-row { flex-direction: column !important; }
+        #left-panel { border-right: none; border-bottom: 1px solid #eee; }
+    }
+
     /* 紧凑按钮样式 */
     .compact-btn button { padding: 4px 10px !important; min-height: 30px !important; height: 30px !important; }
     .compact-row { gap: 8px !important; }
     """
 
-    with gr.Blocks(title="DiffSinger WebUI", theme=gr.themes.Soft(), css=css) as demo:
+    with gr.Blocks(title="DiffSinger WebUI", theme=gr.themes.Soft(), css=css, head='<meta name="description" content="项目地址 https://github.com/bingcheng1998/diffsinger-webui">') as demo:
         with gr.Row(elem_id="main-row"):
             # 左栏：控制/预览（固定）
             with gr.Column(elem_id="left-panel", scale=1, min_width=360):
                 # 左栏标题与模型/模板选择、上传/下载
                 gr.Markdown("## DiffSinger WebUI")
+                gr.Markdown("项目地址： [https://github.com/bingcheng1998/diffsinger-webui](https://github.com/bingcheng1998/diffsinger-webui)")
                 model_sel = gr.Dropdown(choices=model_choices, label="模型选择", value=(model_choices[0] if model_choices else None))
                 template_sel = gr.Dropdown(choices=template_names, label="模板选择", value=(template_names[0] if template_names else None))
                 with gr.Row(elem_classes=["compact-row"]):
@@ -910,13 +916,8 @@ def build_ui():
 
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--host", type=str, default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=7860)
-    args = parser.parse_args()
-
     demo = build_ui()
-    demo.launch(server_name=args.host, server_port=args.port, show_error=True)
+    demo.launch(show_error=True)
 
 
 if __name__ == "__main__":

@@ -1,5 +1,5 @@
 gradio>=4.0.0
 pydub>=0.25.1
 soundfile>=0.12.1
-diffsinger-utau>=0.1.2
+diffsinger-utau>=0.1.5
 pypinyin
