@@ -7,49 +7,17 @@ import hashlib
 import time
 import math
 import re
-from typing import List, Dict, Optional, Tuple
+from typing import Any, List, Dict, Optional, Tuple
 from pathlib import Path
 
 import numpy as np
 from pydub import AudioSegment
-# 引入与 sample.py 一致的组件
-try:
-    from diffsinger_utau.voice_bank import PredAll
-    from diffsinger_utau.voice_bank.commons.ds_reader import DSReader
-    from diffsinger_utau.voice_bank.commons.phome_num_counter import Phome
-    from pypinyin import pinyin, Style
-    from pypinyin.constants import RE_HANS
-except Exception:
-    PredAll = None
-    DSReader = None
-    Phome = None
-    Style = None
-    RE_HANS = None
 
-def get_opencpop_dict(path: str = str(Path("dictionaries") / "opencpop-extension.txt")) -> Dict[str, str]:
-    result = {"AP": "AP", "SP": "SP"}
-    p = Path(path)
-    if not p.exists():
-        return result
-    with p.open("r", encoding="utf-8") as f:
-        for line in f:
-            if "\t" in line:
-                k, v = line.split("\t", 1)
-                result[k.strip()] = v.strip()
-    return result
-
-def get_phonemes(text: str, opencpop_dict: Dict[str, str]) -> List[str]:
-    if Style is None:
-        # 无 pypinyin 时，退化为逐字符
-        return [opencpop_dict.get(ch, ch) for ch in list(text)]
-    pys = [x[0] for x in pinyin(text, style=Style.NORMAL)]
-    result: List[str] = []
-    for py in pys:
-        py = py.strip()
-        if not py:
-            continue
-        result.append(opencpop_dict.get(py, py))
-    return " ".join(result).split()
+from diffsinger_utau.voice_bank import PredAll
+from diffsinger_utau.voice_bank.commons.ds_reader import DSReader
+from diffsinger_utau.voice_bank.commons.phome_num_counter import Phome
+from pypinyin import pinyin, Style
+from pypinyin.constants import RE_HANS
 
 # —— 文本预处理：相邻纯汉字不加空格，其余保留空格 ——
 def _is_hans_token(s: str) -> bool:
@@ -221,28 +189,9 @@ def bgm_path_for(template_path: Path) -> Optional[Path]:
     return None
 
 
-def load_ds(template_path: Path) -> List[Dict]:
-    # ds: 一个 list，每个元素为 dict，至少包含 text；可包含 offset（秒）
-    with open(template_path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-    if not isinstance(data, list):
-        raise ValueError("ds 模板需要是一个 list")
-    # 标准化
-    norm = []
-    for i, item in enumerate(data):
-        if not isinstance(item, dict):
-            raise ValueError(f"ds 第 {i+1} 个元素不是 dict")
-        text = item.get("text", "")
-        if not isinstance(text, str):
-            raise ValueError(f"ds 第 {i+1} 个元素的 text 不是字符串")
-        offset = item.get("offset", 0.0)
-        try:
-            offset = float(offset)
-        except Exception:
-            offset = 0.0
-        norm.append({"text": text, "offset": offset, **item})
-    return norm
-
+def load_ds(template_path: Path):
+    ds = DSReader(template_path).read_ds()
+    return ds
 
 def audiosegment_from_file(path: Path) -> AudioSegment:
     return AudioSegment.from_file(str(path))
@@ -253,7 +202,7 @@ def export_wav(seg: AudioSegment, path: Path):
     seg.export(str(path), format="wav")
 
 
-def overlay_bgm_snippet(vocal_wav: Path, bgm_audio: AudioSegment, offset_sec: float, bgm_volume: float = 1.0, vocal_gain_db: float = 0.0) -> AudioSegment:
+def overlay_bgm_snippet(vocal_wav: Path, bgm_audio: AudioSegment, offset_sec: float, bgm_volume: float = 1.0, vocal_gain_db: float = 0.0):
     vocal = audiosegment_from_file(vocal_wav)
     if vocal_gain_db != 0.0:
         vocal = vocal + vocal_gain_db
@@ -401,8 +350,7 @@ class DSUEngine:
     def __init__(self, old_engine: DiffSingerEngine):
         self.old = old_engine
         self.available = PredAll is not None and DSReader is not None
-        self.predictors: Dict[str, object] = {}  # model_path -> PredAll 实例
-        self.opencpop = get_opencpop_dict()
+        self.predictors: Dict[str, PredAll] = {}  # model_path -> PredAll 实例
 
     def is_ready(self) -> bool:
         return self.available or self.old.is_ready()
@@ -427,17 +375,11 @@ class DSUEngine:
         if self.available:
             predictor = self._get_predictor(model_path)
             # 读取 ds，并替换目标行文本与必要的音素
-            ds_list = DSReader(str(template_path)).read_ds()
+            ds_list = DSReader(template_path).read_ds()
             if not (0 <= line_index < len(ds_list)):
                 raise IndexError("行索引越界")
             ds = ds_list[line_index]
-            old_text = ds.get("text", "")
-            ds["text"] = text
-            # 若文本变化或缺少音素信息，则基于新文本重算音素
-            if (text != old_text) or (not ds.get("ph_seq")) or (not ds.get("ph_num")):
-                phonemes = get_phonemes(text, self.opencpop)
-                ds["ph_seq"] = " ".join(phonemes)
-                ds["ph_num"] = " ".join(map(str, Phome(phonemes).get_ph_num())) if Phome else ""
+            ds.replace(text)
 
             # 选择说话人
             spk = speaker
@@ -979,10 +921,7 @@ def build_ui():
             # 覆盖 text，并基于最新文本重算 ph_seq / ph_num
             for i in range(min(len(ds), len(lines or []))):
                 new_text = lines[i] if lines and i < len(lines) else ds[i].get("text", "")
-                ds[i]["text"] = new_text
-                phonemes = get_phonemes(new_text, get_opencpop_dict())
-                ds[i]["ph_seq"] = " ".join(phonemes)
-                ds[i]["ph_num"] = " ".join(map(str, Phome(phonemes).get_ph_num())) if Phome else ds[i].get("ph_num", "")
+                ds[i].replace(new_text)
             # 输出到 output/pred_all/<template>/edits
             ts_tag = time.strftime("%Y%m%d_%H%M%S")
             out_dir = OUTPUT_DIR / template_sel_v / "edits"
