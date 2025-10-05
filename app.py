@@ -253,6 +253,62 @@ def mix_full_song(vocal: AudioSegment, bgm: AudioSegment, bgm_volume: float = 0.
     return bgm_adj.overlay(vocal)
 
 
+def copy_prompt_to_clipboard(lyrics_text: str) -> str:
+    """生成AI歌词的prompt"""
+    processed_lyrics = preprocess_zh_spaces(lyrics_text) if lyrics_text else ""
+    
+    prompt = f"""这是原始歌词：
+```txt
+{processed_lyrics}
+```
+
+其中SP和AP分别代表停顿和呼吸。你应该保留原始格式，然后按照要求替换歌词。
+
+保留原始格式的意思是每句歌词字数应该保持不变。
+
+比如 "AP 试着 SP 掬一把星辰 SP 在手心 SP" 修改为 "AP 天空 SP 赤色的晚霞 SP 刚散去 SP" 就是符合要求的。如果有多字、少字或者AP, SP位置不对，都是不符合要求的。
+
+现在请帮我基于上述原始歌词模板，写一首歌曲《历史的进程推着人前进》，主题为：个人奋斗是基础，但是历史进程浩浩汤汤，不可阻挡。"""
+    
+    # 复制到剪切板
+    try:
+        import pyperclip
+        pyperclip.copy(prompt)
+        return "Prompt已复制到剪切板！"
+    except ImportError:
+        # 如果没有pyperclip，使用系统命令
+        try:
+            import subprocess
+            import platform
+            if platform.system() == "Darwin":  # macOS
+                subprocess.run(["pbcopy"], input=prompt.encode(), check=True)
+            elif platform.system() == "Linux":
+                subprocess.run(["xclip", "-selection", "clipboard"], input=prompt.encode(), check=True)
+            elif platform.system() == "Windows":
+                subprocess.run(["clip"], input=prompt.encode(), check=True)
+            return "Prompt已复制到剪切板！"
+        except Exception as e:
+            return f"复制失败：{e}"
+
+
+def apply_ai_lyrics(ai_lyrics: str, original_lyrics: str) -> Tuple[str, str]:
+    """应用AI生成的歌词到右侧文本框"""
+    if not ai_lyrics or not ai_lyrics.strip():
+        return original_lyrics, "请先输入回填歌词"
+    
+    # 分割歌词为行
+    ai_lines = [line.strip() for line in ai_lyrics.strip().split('\n') if line.strip()]
+    original_lines = [line.strip() for line in original_lyrics.strip().split('\n') if line.strip()]
+    
+    # 检查行数是否一致
+    if len(ai_lines) != len(original_lines):
+        return original_lyrics, f"行数不匹配：AI歌词有{len(ai_lines)}行，原始歌词有{len(original_lines)}行"
+    
+    # 逐行替换
+    new_lyrics = '\n'.join(ai_lines)
+    return new_lyrics, "歌词应用成功！"
+
+
 def param_hash(model_sel: str, speaker: str, key_shift: int, steps: int, text: str) -> str:
     s = json.dumps(
         {
@@ -573,6 +629,18 @@ def build_ui():
                 full_vocal = gr.Audio(label="整首（人声）", autoplay=False)
                 full_mixed = gr.Audio(label="整首（混音）", autoplay=False, visible=False)
 
+                # AI歌词功能
+                with gr.Accordion("AI歌词", open=False):
+                    gr.Markdown("由于服务器限制，请复制prompt，到大模型APP粘贴，并将结果回填")
+                    copy_prompt_btn = gr.Button("复制prompt")
+                    ai_lyrics_input = gr.Textbox(
+                        label="回填歌词",
+                        lines=10,
+                        max_lines=15,
+                        placeholder="请将大模型生成的歌词粘贴到这里..."
+                    )
+                    apply_lyrics_btn = gr.Button("应用歌词")
+
             # 右栏：模板与歌词编辑
             with gr.Column(elem_id="right-panel", scale=2):
                 # 状态与歌词编辑容器（右栏仅歌词编辑）
@@ -878,6 +946,58 @@ def build_ui():
             tpl_upds = on_template_change(template_name)
             return (spk_upd, *tpl_upds)
 
+        # AI歌词功能事件绑定
+        def handle_copy_prompt(lines_list):
+            """处理复制prompt"""
+            # 将当前歌词列表合并为文本
+            lyrics_text = '\n'.join(lines_list) if lines_list else ""
+            message = copy_prompt_to_clipboard(lyrics_text)
+            gr.Info(message)
+            return message
+        
+        def handle_apply_lyrics(ai_lyrics, lines_list):
+            """处理应用歌词到文本框"""
+            if not ai_lyrics or not ai_lyrics.strip():
+                gr.Warning("请先输入回填歌词")
+                return [gr.update() for _ in textboxes] + [lines_list]
+            
+            # 分割歌词为行
+            ai_lines = [line.strip() for line in ai_lyrics.strip().split('\n') if line.strip()]
+            
+            # 检查行数是否一致
+            if len(ai_lines) != len(lines_list):
+                gr.Warning(f"行数不匹配：AI歌词有{len(ai_lines)}行，原始歌词有{len(lines_list)}行")
+                return [gr.update() for _ in textboxes] + [lines_list]
+            
+            # 更新文本框
+            textbox_updates = []
+            new_lines = []
+            for i, tb in enumerate(textboxes):
+                if i < len(ai_lines):
+                    textbox_updates.append(gr.update(value=ai_lines[i]))
+                    new_lines.append(ai_lines[i])
+                elif i < len(lines_list):
+                    textbox_updates.append(gr.update(value=lines_list[i]))
+                    new_lines.append(lines_list[i])
+                else:
+                    textbox_updates.append(gr.update())
+                    new_lines.append("")
+            
+            gr.Info("歌词应用成功！")
+            return textbox_updates + [new_lines]
+        
+        copy_prompt_btn.click(
+            fn=handle_copy_prompt,
+            inputs=[lines_state],
+            outputs=[]
+        )
+        
+        apply_lyrics_btn.click(
+            fn=handle_apply_lyrics,
+            inputs=[ai_lyrics_input, lines_state],
+            outputs=[*textboxes, lines_state]
+        )
+
         demo.load(
             fn=on_app_load,
             inputs=[model_sel, template_sel],
@@ -889,7 +1009,7 @@ def build_ui():
 
 def main():
     demo = build_ui()
-    demo.launch(show_error=True)
+    demo.launch()
 
 
 if __name__ == "__main__":
