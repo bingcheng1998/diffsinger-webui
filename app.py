@@ -202,7 +202,7 @@ def export_wav(seg: AudioSegment, path: Path):
     seg.export(str(path), format="wav")
 
 
-def overlay_bgm_snippet(vocal_wav: Path, bgm_audio: AudioSegment, offset_sec: float, bgm_volume: float = 1.0, vocal_gain_db: float = 0.0):
+def overlay_bgm_snippet(vocal_wav: Path, bgm_audio: AudioSegment, offset_sec: float, bgm_volume: float = 1.0, vocal_gain_db: float = 0.0) -> AudioSegment:
     vocal = audiosegment_from_file(vocal_wav)
     if vocal_gain_db != 0.0:
         vocal = vocal + vocal_gain_db
@@ -219,7 +219,8 @@ def overlay_bgm_snippet(vocal_wav: Path, bgm_audio: AudioSegment, offset_sec: fl
         pad_ms = start_ms + len(vocal) - len(base)
         base = base + AudioSegment.silent(duration=pad_ms)
     mixed = base.overlay(vocal, position=start_ms)
-    return mixed[start_ms : start_ms + len(vocal)]
+
+    return mixed[start_ms : start_ms + len(vocal)]  # pyright: ignore[reportReturnType]
 
 
 def concat_with_offsets(clips: List[Tuple[AudioSegment, float]]) -> AudioSegment:
@@ -267,93 +268,16 @@ def param_hash(model_sel: str, speaker: str, key_shift: int, steps: int, text: s
     )
     return hashlib.md5(s.encode("utf-8")).hexdigest()[:16]
 
-
-class DiffSingerEngine:
-    def __init__(self):
-        self.impl = diffsinger_utau
-        self.entry = None
-        if self.impl is not None:
-            # 尝试发现可用入口函数（不同版本可能不同）
-            candidates = ["synthesize", "synth", "infer", "generate", "tts"]
-            for name in candidates:
-                fn = getattr(self.impl, name, None)
-                if callable(fn):
-                    self.entry = fn
-                    break
-
-    def is_ready(self) -> bool:
-        return self.impl is not None and self.entry is not None
-
-    def synth_once(
-        self,
-        model_path: Path,
-        text: str,
-        speaker: Optional[str],
-        key_shift: int,
-        steps: int,
-        out_wav: Path,
-    ) -> None:
-        """
-        使用 diffsinger-utau 渲染单句音频到 out_wav。
-        如果不同版本签名不同，将尝试多种参数形式。
-        """
-        if not self.is_ready():
-            raise RuntimeError(
-                "未找到可用的 diffsinger-utau 推理入口。请确认已安装并与 torch==1.13.1 兼容。"
-            )
-
-        out_wav.parent.mkdir(parents=True, exist_ok=True)
-
-        tried = []
-
-        def call_or_record(fn, kwargs):
-            tried.append({"fn": fn.__name__, "kwargs": list(kwargs.keys())})
-            return fn(**kwargs)
-
-        # 常见签名尝试
-        errors = []
-        for kwargs in [
-            dict(model=str(model_path), text=text, speaker=speaker, key_shift=key_shift, steps=steps, out=str(out_wav)),
-            dict(model=str(model_path), text=text, speaker=speaker, key_shift=key_shift, acoustic_steps=steps, out=str(out_wav)),
-            dict(model_path=str(model_path), text=text, speaker=speaker, key_shift=key_shift, steps=steps, output=str(out_wav)),
-            dict(model=str(model_path), text=text, key_shift=key_shift, steps=steps, out=str(out_wav)),
-            dict(model=str(model_path), text=text, out=str(out_wav)),
-        ]:
-            # 移除 None
-            kwargs = {k: v for k, v in kwargs.items() if v is not None}
-            try:
-                ret = call_or_record(self.entry, kwargs)
-                # 若函数返回波形和采样率，也直接落盘
-                if ret is not None and isinstance(ret, (tuple, list)) and len(ret) >= 2:
-                    wav, sr = ret[0], ret[1]
-                    import soundfile as sf  # 懒加载
-                    sf.write(str(out_wav), np.asarray(wav, dtype=np.float32), int(sr))
-                # 若 out_wav 成功生成，结束
-                if out_wav.exists() and out_wav.stat().st_size > 0:
-                    return
-            except Exception as e:
-                errors.append(f"{e}")
-
-        raise RuntimeError(
-            "调用 diffsinger-utau 失败。已尝试多种签名："
-            + json.dumps(tried, ensure_ascii=False)
-            + f"；错误示例：{errors[-1] if errors else '未知'}"
-        )
-
-
-engine = DiffSingerEngine()
-
 class DSUEngine:
     """
-    基于 voice_bank.PredAll 的推理引擎；若不可用则回退到 DiffSingerEngine。
+    基于 voice_bank.PredAll 的推理引擎；。
     """
-    def __init__(self, old_engine: DiffSingerEngine):
-        self.old = old_engine
+    def __init__(self):
         self.available = PredAll is not None and DSReader is not None
         self.predictors: Dict[str, PredAll] = {}  # model_path -> PredAll 实例
 
     def is_ready(self) -> bool:
-        return self.available or self.old.is_ready()
+        return self.available
 
     def _get_predictor(self, model_path: Path):
         key = str(model_path.resolve())
@@ -415,11 +339,9 @@ class DSUEngine:
             if not out_wav.exists() or out_wav.stat().st_size == 0:
                 raise RuntimeError("未能生成音频文件")
         else:
-            # 回退旧引擎（不依赖 ds）
-            self.old.synth_once(model_path, text, speaker, key_shift, steps, out_wav)
+            pass
 
-# 用 DSUEngine 覆盖默认引擎
-engine = DSUEngine(engine)
+engine = DSUEngine()
 
 
 def get_template_choices_and_bgm_visible():
