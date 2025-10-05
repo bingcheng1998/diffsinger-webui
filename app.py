@@ -296,9 +296,9 @@ def apply_ai_lyrics(ai_lyrics: str, original_lyrics: str) -> Tuple[str, str]:
     if not ai_lyrics or not ai_lyrics.strip():
         return original_lyrics, "请先输入回填歌词"
     
-    # 分割歌词为行
-    ai_lines = [line.strip() for line in ai_lyrics.strip().split('\n') if line.strip()]
-    original_lines = [line.strip() for line in original_lyrics.strip().split('\n') if line.strip()]
+    # 分割歌词为行，保留空行
+    ai_lines = [line.strip() for line in ai_lyrics.split('\n')]
+    original_lines = [line.strip() for line in original_lyrics.split('\n')]
     
     # 检查行数是否一致
     if len(ai_lines) != len(original_lines):
@@ -955,36 +955,60 @@ def build_ui():
             gr.Info(message)
             return message
         
-        def handle_apply_lyrics(ai_lyrics, lines_list):
+        def handle_apply_lyrics(ai_lyrics, lines_list, original_lines_list):
             """处理应用歌词到文本框"""
             if not ai_lyrics or not ai_lyrics.strip():
                 gr.Warning("请先输入回填歌词")
-                return [gr.update() for _ in textboxes] + [lines_list]
+                return [gr.update() for _ in textboxes] + [gr.update() for _ in error_markdowns] + [lines_list]
             
-            # 分割歌词为行
-            ai_lines = [line.strip() for line in ai_lyrics.strip().split('\n') if line.strip()]
+            # 分割歌词为行，保留空行以保持行数一致
+            ai_lines = [line.strip() for line in ai_lyrics.split('\n')]
             
             # 检查行数是否一致
             if len(ai_lines) != len(lines_list):
                 gr.Warning(f"行数不匹配：AI歌词有{len(ai_lines)}行，原始歌词有{len(lines_list)}行")
-                return [gr.update() for _ in textboxes] + [lines_list]
+                return [gr.update() for _ in textboxes] + [gr.update() for _ in error_markdowns] + [lines_list]
             
-            # 更新文本框
+            # 更新文本框和状态，同时校验每句格式
             textbox_updates = []
-            new_lines = []
-            for i, tb in enumerate(textboxes):
-                if i < len(ai_lines):
-                    textbox_updates.append(gr.update(value=ai_lines[i]))
-                    new_lines.append(ai_lines[i])
-                elif i < len(lines_list):
-                    textbox_updates.append(gr.update(value=lines_list[i]))
-                    new_lines.append(lines_list[i])
+            error_updates = []
+            new_lines = ai_lines[:len(lines_list)]  # 直接使用AI歌词，截断到原始长度
+            
+            has_errors = False
+            
+            # 更新所有文本框并校验格式
+            for i in range(len(textboxes)):
+                if i < len(new_lines):
+                    textbox_updates.append(gr.update(value=new_lines[i]))
+                    
+                    # 校验当前句子格式
+                    if i < len(original_lines_list):
+                        original_text = original_lines_list[i]
+                        new_text = new_lines[i]
+                        is_valid, rendered_original = validate_lyric_format(new_text, original_text)
+                        
+                        if not is_valid:
+                            error_msg = f"字数与原始文本不符：{rendered_original}"
+                            error_updates.append(gr.update(value=error_msg, visible=True))
+                            has_errors = True
+                        else:
+                            error_updates.append(gr.update(value="", visible=False))
+                    else:
+                        error_updates.append(gr.update(value="", visible=False))
                 else:
                     textbox_updates.append(gr.update())
-                    new_lines.append("")
+                    error_updates.append(gr.update(value="", visible=False))
             
-            gr.Info("歌词应用成功！")
-            return textbox_updates + [new_lines]
+            # 补齐剩余的错误提示更新
+            while len(error_updates) < len(error_markdowns):
+                error_updates.append(gr.update(value="", visible=False))
+            
+            if has_errors:
+                gr.Warning("歌词应用成功，但部分句子格式有误，请检查红色提示")
+            else:
+                gr.Info("歌词应用成功！所有句子格式正确")
+            
+            return textbox_updates + error_updates + [new_lines]
         
         copy_prompt_btn.click(
             fn=handle_copy_prompt,
@@ -994,8 +1018,8 @@ def build_ui():
         
         apply_lyrics_btn.click(
             fn=handle_apply_lyrics,
-            inputs=[ai_lyrics_input, lines_state],
-            outputs=[*textboxes, lines_state]
+            inputs=[ai_lyrics_input, lines_state, original_lines_state],
+            outputs=[*textboxes, *error_markdowns, lines_state]
         )
 
         demo.load(
