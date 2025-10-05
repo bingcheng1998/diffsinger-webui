@@ -7,6 +7,7 @@ import hashlib
 import time
 import math
 import re
+import zipfile
 from typing import Any, List, Dict, Optional, Tuple
 from pathlib import Path
 
@@ -611,7 +612,7 @@ def build_ui():
                 template_sel = gr.Dropdown(choices=template_names, label="模板选择", value=(template_names[0] if template_names else None))
                 with gr.Row(elem_classes=["compact-row"]):
                     upload = gr.UploadButton("上传ds模板", file_types=[".ds"], elem_classes=["compact-btn"])
-                    download_btn = gr.DownloadButton(label="下载当前ds状态", elem_classes=["compact-btn"])
+                    download_btn = gr.DownloadButton(label="下载ds&lrc", elem_classes=["compact-btn"])
 
                 with gr.Row():
                     bgm_volume = gr.Slider(0.0, 2.0, value=0.3, step=0.01, label="BGM音量", visible=False)
@@ -901,7 +902,7 @@ def build_ui():
             outputs=[full_vocal, full_mixed, gen_btn, progress_md, stop_flag, generating_flag],
         )
 
-        # 下载当前编辑后的 ds
+        # 下载当前编辑后的 ds 和 lrc
         def build_current_ds(template_sel_v, lines, offsets):
             mapping = find_templates()
             if not template_sel_v or template_sel_v not in mapping:
@@ -912,13 +913,77 @@ def build_ui():
             for i in range(min(len(ds), len(lines or []))):
                 new_text = lines[i] if lines and i < len(lines) else ds[i].get("text", "")
                 ds[i].replace(new_text)
+            
             # 输出到 output/pred_all/<template>/edits
             ts_tag = time.strftime("%Y%m%d_%H%M%S")
             out_dir = OUTPUT_DIR / template_sel_v / "edits"
             out_dir.mkdir(parents=True, exist_ok=True)
-            out_path = out_dir / f"{template_sel_v}_edited_{ts_tag}.ds"
-            out_path.write_text(json.dumps(ds, ensure_ascii=False, indent=2), encoding="utf-8")
-            return str(out_path)
+            
+            # 生成DS文件
+            ds_path = out_dir / f"{template_sel_v}_edited_{ts_tag}.ds"
+            ds_path.write_text(json.dumps(ds, ensure_ascii=False, indent=2), encoding="utf-8")
+            
+            # 生成LRC文件
+            lrc_path = out_dir / f"{template_sel_v}_edited_{ts_tag}.lrc"
+            lrc_content = generate_lrc_content(ds, lines, offsets)
+            lrc_path.write_text(lrc_content, encoding="utf-8")
+            
+            # 创建包含DS和LRC的压缩包
+            zip_path = out_dir / f"{template_sel_v}_edited_{ts_tag}.zip"
+            with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                zipf.write(ds_path, ds_path.name)
+                zipf.write(lrc_path, lrc_path.name)
+            
+            return str(zip_path)
+        
+        def generate_lrc_content(ds_data, lines, offsets):
+            """生成LRC歌词文件内容"""
+            lrc_lines = []
+            
+            # 添加LRC文件头信息
+            lrc_lines.append("[ar:DiffSinger]")
+            lrc_lines.append("[ti:Generated Song]")
+            lrc_lines.append("[al:DiffSinger WebUI]")
+            lrc_lines.append("[by:DiffSinger WebUI]")
+            lrc_lines.append("")
+            
+            for i, sentence_data in enumerate(ds_data):
+                # 获取当前句子的歌词文本
+                if i < len(lines or []) and lines[i]:
+                    lyric_text = lines[i]
+                else:
+                    lyric_text = sentence_data.get("text", "")
+                
+                # 清理歌词文本，移除AP、SP等标记并去掉所有空格
+                display_text = clean_lyric_for_display(lyric_text)
+                
+                # 如果有实际歌词内容才添加到LRC
+                if display_text.strip():
+                    # 使用offset作为开始时间
+                    start_time = 0.0
+                    if i < len(offsets or []) and offsets[i] is not None:
+                        start_time = float(offsets[i])
+                    
+                    # 格式化时间戳 [mm:ss.xx]
+                    minutes = int(start_time // 60)
+                    seconds = start_time % 60
+                    time_stamp = f"[{minutes:02d}:{seconds:05.2f}]"
+                    
+                    lrc_lines.append(f"{time_stamp}{display_text}")
+            
+            return "\n".join(lrc_lines)
+        
+        def clean_lyric_for_display(lyric_text):
+            """清理歌词文本，移除AP、SP等标记并去掉所有空格，用于LRC显示"""
+            if not lyric_text:
+                return ""
+            
+            # 移除AP、SP标记
+            cleaned = re.sub(r'\b(AP|SP)\b', '', lyric_text)
+            # 去掉所有空格
+            cleaned = re.sub(r'\s+', '', cleaned)
+            
+            return cleaned
 
         download_btn.click(
             fn=build_current_ds,
