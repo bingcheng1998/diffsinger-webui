@@ -6,6 +6,7 @@ import sys
 import hashlib
 import time
 import math
+import re
 from typing import List, Dict, Optional, Tuple
 from pathlib import Path
 
@@ -72,6 +73,91 @@ def preprocess_zh_spaces(text: str) -> str:
             else:
                 out.append(" " + part)
     return "".join(out)
+
+
+def validate_lyric_format(modified_text: str, original_text: str) -> Tuple[bool, str]:
+    """
+    校验歌词格式是否与原始文本匹配
+    返回: (是否匹配, 渲染后的原始文本或空字符串)
+    """
+    if not original_text:
+        return True, ""
+    
+    # 去掉空格后比较
+    modified_clean = re.sub(r'\s+', '', modified_text)
+    original_clean = re.sub(r'\s+', '', original_text)
+    
+    # 长度检查
+    if len(modified_clean) != len(original_clean):
+        return False, render_original_with_highlights(original_text, modified_text)
+    
+    # AP/SP 位置检查
+    modified_ap_sp_positions = []
+    original_ap_sp_positions = []
+    
+    # 找到修改后文本中的 AP/SP 位置
+    for match in re.finditer(r'\b(AP|SP)\b', modified_text):
+        modified_ap_sp_positions.append((match.start(), match.group()))
+    
+    # 找到原始文本中的 AP/SP 位置  
+    for match in re.finditer(r'\b(AP|SP)\b', original_text):
+        original_ap_sp_positions.append((match.start(), match.group()))
+    
+    # 比较 AP/SP 的数量和类型
+    if len(modified_ap_sp_positions) != len(original_ap_sp_positions):
+        return False, render_original_with_highlights(original_text, modified_text)
+    
+    # 检查每个 AP/SP 的相对位置是否一致
+    for (mod_pos, mod_type), (orig_pos, orig_type) in zip(modified_ap_sp_positions, original_ap_sp_positions):
+        if mod_type != orig_type:
+            return False, render_original_with_highlights(original_text, modified_text)
+        
+        # 计算相对位置（在去空格后的字符串中）
+        mod_relative_pos = len(re.sub(r'\s+', '', modified_text[:mod_pos]))
+        orig_relative_pos = len(re.sub(r'\s+', '', original_text[:orig_pos]))
+        
+        if mod_relative_pos != orig_relative_pos:
+            return False, render_original_with_highlights(original_text, modified_text)
+    
+    return True, ""
+
+
+def render_original_with_highlights(original_text: str, modified_text: str) -> str:
+    """
+    渲染原始文本，用灰色字体显示，位置不一致的 AP/SP 用红色标记
+    """
+    # 找到修改后和原始文本中的 AP/SP 位置
+    modified_ap_sp = set()
+    original_ap_sp = set()
+    
+    for match in re.finditer(r'\b(AP|SP)\b', modified_text):
+        pos = len(re.sub(r'\s+', '', modified_text[:match.start()]))
+        modified_ap_sp.add((pos, match.group()))
+    
+    result_parts = []
+    i = 0
+    clean_pos = 0
+    
+    while i < len(original_text):
+        # 检查当前位置是否是 AP 或 SP
+        if original_text[i:i+2] in ['AP', 'SP'] and (i == 0 or not original_text[i-1].isalnum()) and (i+2 >= len(original_text) or not original_text[i+2].isalnum()):
+            ap_sp = original_text[i:i+2]
+            # 检查这个 AP/SP 在修改后的文本中是否在相同位置
+            if (clean_pos, ap_sp) not in modified_ap_sp:
+                result_parts.append(f'<span style="color: red;">{ap_sp}</span>')
+            else:
+                result_parts.append(ap_sp)
+            i += 2
+            clean_pos += 2
+        elif original_text[i].isspace():
+            result_parts.append(original_text[i])
+            i += 1
+        else:
+            result_parts.append(original_text[i])
+            i += 1
+            clean_pos += 1
+    
+    return f'<span style="color: gray;">{"".join(result_parts)}</span>'
 
 # 试图导入 diffsinger-utau（按要求使用该库，而非自行实现）
 try:
@@ -608,7 +694,7 @@ def build_ui():
                     download_btn = gr.DownloadButton(label="下载当前ds状态", elem_classes=["compact-btn"])
 
                 with gr.Row():
-                    bgm_volume = gr.Slider(0.0, 2.0, value=1.0, step=0.01, label="BGM音量倍率", visible=False)
+                    bgm_volume = gr.Slider(0.0, 2.0, value=0.3, step=0.01, label="BGM音量", visible=False)
                     key_shift = gr.Slider(-12, 12, value=0, step=1, label="音高偏移")
                     steps = gr.Slider(1, 50, value=4, step=1, label="渲染步数")
                 speaker = gr.Dropdown(label="演唱者", choices=[], value=None, interactive=True)
@@ -633,8 +719,10 @@ def build_ui():
                 generating_flag = gr.State(False)
                 dyn = gr.Column()
 
-                # 预创建文本框，依据当前模板设置初始可见性和值
+                # 预创建文本框和错误提示，依据当前模板设置初始可见性和值
                 textboxes = []
+                error_markdowns = []
+                original_lines_state = gr.State([])  # 存储原始歌词用于校验
                 init_lines = []
                 init_offsets = []
                 if template_sel.value:
@@ -648,22 +736,29 @@ def build_ui():
                         val = init_lines[i] if visible else ""
                         tb = gr.Textbox(value=val, label=f"第 {i+1} 句", lines=1, max_lines=1, visible=visible)
                         textboxes.append(tb)
+                        # 为每个文本框添加对应的错误提示
+                        error_md = gr.Markdown("", visible=False)
+                        error_markdowns.append(error_md)
                 if template_sel.value:
                     lines_state.value = init_lines
                     offsets_state.value = init_offsets
+                    original_lines_state.value = init_lines.copy()
 
         # 事件：选择模板时，更新 BGM 开关、整首混音可见性与文本框内容
         def on_template_change(template_name):
             bgm_update, lines, offsets = on_select_template(template_name)
             has_bgm = bool(bgm_update.get("visible", False)) if isinstance(bgm_update, dict) else False
             tb_updates = []
+            error_updates = []
             n = len(lines)
             for i, tb in enumerate(textboxes):
                 if i < n:
                     tb_updates.append(gr.update(value=lines[i], visible=True))
+                    error_updates.append(gr.update(value="", visible=False))
                 else:
                     tb_updates.append(gr.update(value="", visible=False))
-            # 返回：BGM、模板下拉、状态、错误清空、整首混音可见性（按是否存在BGM），以及所有文本框更新
+                    error_updates.append(gr.update(value="", visible=False))
+            # 返回：BGM、模板下拉、状态、错误清空、整首混音可见性（按是否存在BGM），原始歌词状态，以及所有文本框和错误提示更新
             return (
                 bgm_update,
                 gr.update(choices=get_template_choices_and_bgm_visible(), value=template_name),
@@ -671,7 +766,9 @@ def build_ui():
                 offsets,
                 gr.update(value="", visible=False),
                 gr.update(visible=has_bgm),
+                lines.copy(),
                 *tb_updates,
+                *error_updates,
             )
 
         # 模型切换：动态更新 speaker 下拉项
@@ -717,7 +814,7 @@ def build_ui():
         template_sel.change(
             fn=on_template_change,
             inputs=[template_sel],
-            outputs=[bgm_volume, template_sel, lines_state, offsets_state, per_line_error, full_mixed, *textboxes],
+            outputs=[bgm_volume, template_sel, lines_state, offsets_state, per_line_error, full_mixed, original_lines_state, *textboxes, *error_markdowns],
         )
 
         # 上传模板：将用户 .ds 保存到 templates/user，并刷新模板下拉
@@ -758,21 +855,35 @@ def build_ui():
         # 文本提交事件：逐句渲染（为预创建文本框绑定）
         for idx, tb in enumerate(textboxes):
             def make_submit(i):
-                def _submit(new_text, lines_list, model_sel_v, template_sel_v, speaker_v, key_shift_v, steps_v, bgm_volume_v):
+                def _submit(new_text, lines_list, original_lines_list, model_sel_v, template_sel_v, speaker_v, key_shift_v, steps_v, bgm_volume_v):
                     # 仅处理当前可见范围内的行
                     if not isinstance(lines_list, list) or i >= max(len(lines_list), 0):
-                        return gr.update(), gr.update(), lines_list
+                        return gr.update(), gr.update(), gr.update(), lines_list
+                    
+                    # 校验歌词格式
+                    original_text = original_lines_list[i] if i < len(original_lines_list) else ""
+                    is_valid, rendered_original = validate_lyric_format(new_text, original_text)
+                    
+                    # 更新错误提示
+                    if not is_valid:
+                        error_msg = f"字数与原始文本不符：{rendered_original}"
+                        error_update = gr.update(value=error_msg, visible=True)
+                    else:
+                        error_update = gr.update(value="", visible=False)
+                    
+                    # 渲染音频
                     audio_path, err = render_single_line(model_sel_v, template_sel_v, i, new_text, speaker_v, key_shift_v, steps_v, bgm_volume_v)
                     if i < len(lines_list):
                         lines_list[i] = new_text
                     if err:
-                        return gr.update(value=None), gr.update(value=f"❌ {err}", visible=True), lines_list
-                    return gr.update(value=audio_path), gr.update(value="", visible=False), lines_list
+                        return gr.update(value=None), gr.update(value=f"❌ {err}", visible=True), error_update, lines_list
+                    return gr.update(value=audio_path), gr.update(value="", visible=False), error_update, lines_list
                 return _submit
+            
             tb.submit(
                 fn=make_submit(idx),
-                inputs=[tb, lines_state, model_sel, template_sel, speaker, key_shift, steps, bgm_volume],
-                outputs=[per_line_audio, per_line_error, lines_state],
+                inputs=[tb, lines_state, original_lines_state, model_sel, template_sel, speaker, key_shift, steps, bgm_volume],
+                outputs=[per_line_audio, per_line_error, error_markdowns[idx], lines_state],
             )
 
         # 生成整首（支持进度与中断）
@@ -909,7 +1020,7 @@ def build_ui():
         demo.load(
             fn=on_app_load,
             inputs=[model_sel, template_sel],
-            outputs=[speaker, bgm_volume, template_sel, lines_state, offsets_state, per_line_error, full_mixed, *textboxes],
+            outputs=[speaker, bgm_volume, template_sel, lines_state, offsets_state, per_line_error, full_mixed, original_lines_state, *textboxes, *error_markdowns],
         )
 
     return demo
