@@ -202,7 +202,7 @@ def export_wav(seg: AudioSegment, path: Path):
     seg.export(str(path), format="wav")
 
 
-def overlay_bgm_snippet(vocal_wav: Path, bgm_audio: AudioSegment, offset_sec: float, bgm_volume: float = 1.0, vocal_gain_db: float = 0.0) -> AudioSegment:
+def overlay_bgm_snippet(vocal_wav: Path, bgm_audio: AudioSegment, offset_sec: float, bgm_volume: float = 0.3, vocal_gain_db: float = 0.0) -> AudioSegment:
     vocal = audiosegment_from_file(vocal_wav)
     if vocal_gain_db != 0.0:
         vocal = vocal + vocal_gain_db
@@ -238,7 +238,7 @@ def concat_with_offsets(clips: List[Tuple[AudioSegment, float]]) -> AudioSegment
     return timeline
 
 
-def mix_full_song(vocal: AudioSegment, bgm: AudioSegment, bgm_volume: float = 1.0) -> AudioSegment:
+def mix_full_song(vocal: AudioSegment, bgm: AudioSegment, bgm_volume: float = 0.3) -> AudioSegment:
     # 保证两者同长度
     if len(bgm) < len(vocal):
         bgm = bgm + AudioSegment.silent(duration=(len(vocal) - len(bgm)))
@@ -360,7 +360,7 @@ def on_select_template(template_name: str):
     ds = load_ds(p)
     lines = [preprocess_zh_spaces(item.get("text", "")) for item in ds]
     offsets = [float(item.get("offset", 0.0)) for item in ds]
-    bgm_update = gr.update(visible=(bgm is not None), value=(1.0 if bgm is not None else 0.0))
+    bgm_update = gr.update(visible=(bgm is not None), value=(0.3 if bgm is not None else 0.0))
     return bgm_update, lines, offsets
 
 
