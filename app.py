@@ -269,7 +269,7 @@ def copy_prompt_to_clipboard(lyrics_text: str) -> str:
 
 比如 "AP 试着 SP 掬一把星辰 SP 在手心 SP" 修改为 "AP 天空 SP 赤色的晚霞 SP 刚散去 SP" 就是符合要求的。如果有多字、少字或者AP, SP位置不对，都是不符合要求的。
 
-现在请帮我基于上述原始歌词模板，写一首歌曲《历史的进程推着人前进》，主题为：个人奋斗是基础，但是历史进程浩浩汤汤，不可阻挡。"""
+现在请帮我基于上述原始歌词模板，写一首歌曲《历史的进程推着人前进》，主题为：个人奋斗固然重要，但是历史进程更加浩浩汤汤。"""
     
     # 复制到剪切板
     try:
@@ -928,11 +928,17 @@ def build_ui():
             lrc_content = generate_lrc_content(ds, lines, offsets)
             lrc_path.write_text(lrc_content, encoding="utf-8")
             
-            # 创建包含DS和LRC的压缩包
+            # 生成纯字幕TXT文件
+            txt_path = out_dir / f"{template_sel_v}_edited_{ts_tag}.txt"
+            txt_content = generate_txt_content(ds, lines)
+            txt_path.write_text(txt_content, encoding="utf-8")
+            
+            # 创建包含DS、LRC和TXT的压缩包
             zip_path = out_dir / f"{template_sel_v}_edited_{ts_tag}.zip"
             with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
                 zipf.write(ds_path, ds_path.name)
                 zipf.write(lrc_path, lrc_path.name)
+                zipf.write(txt_path, txt_path.name)
             
             return str(zip_path)
         
@@ -972,6 +978,26 @@ def build_ui():
                     lrc_lines.append(f"{time_stamp}{display_text}")
             
             return "\n".join(lrc_lines)
+        
+        def generate_txt_content(ds_data, lines):
+            """生成纯字幕TXT文件内容"""
+            txt_lines = []
+            
+            for i, sentence_data in enumerate(ds_data):
+                # 获取当前句子的歌词文本
+                if i < len(lines or []) and lines[i]:
+                    lyric_text = lines[i]
+                else:
+                    lyric_text = sentence_data.get("text", "")
+                
+                # 清理歌词文本，移除AP、SP等标记并去掉所有空格
+                display_text = clean_lyric_for_display(lyric_text)
+                
+                # 如果有实际歌词内容才添加到TXT
+                if display_text.strip():
+                    txt_lines.append(display_text)
+            
+            return "\n".join(txt_lines)
         
         def clean_lyric_for_display(lyric_text):
             """清理歌词文本，移除AP、SP等标记并去掉所有空格，用于LRC显示"""
